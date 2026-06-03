@@ -1,4 +1,4 @@
-import NextAuth from "next-auth";
+import NextAuth, { type NextAuthConfig } from "next-auth";
 import Spotify from "next-auth/providers/spotify";
 
 const SCOPES = [
@@ -31,25 +31,24 @@ async function refreshAccessToken(refreshToken: string) {
   return {
     access_token: data.access_token as string,
     expires_at: Math.floor(Date.now() / 1000) + (data.expires_in as number),
-    // Spotify may or may not return a new refresh token; keep the old one if not.
     refresh_token: (data.refresh_token as string | undefined) ?? refreshToken,
   };
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+// Exported so the route handler can call @auth/core's Auth() directly
+// with a URL-fixed plain Request, bypassing Next.js hostname normalization.
+export const authConfig: NextAuthConfig = {
   trustHost: true,
   providers: [
     Spotify({
       clientId: process.env.SPOTIFY_CLIENT_ID,
       clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
-      authorization: {
-        params: { scope: SCOPES },
-      },
+      authorization: `https://accounts.spotify.com/authorize?scope=${encodeURIComponent(SCOPES)}`,
+      checks: ["state"],
     }),
   ],
   callbacks: {
     async jwt({ token, account }) {
-      // Initial sign-in: persist the tokens from the OAuth account.
       if (account) {
         token.access_token = account.access_token;
         token.refresh_token = account.refresh_token;
@@ -57,12 +56,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return token;
       }
 
-      // Still valid (60s safety margin) — reuse.
       if (token.expires_at && Date.now() < (token.expires_at - 60) * 1000) {
         return token;
       }
 
-      // Expired — rotate.
       if (!token.refresh_token) {
         token.error = "NoRefreshToken";
         return token;
@@ -84,4 +81,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
   },
-});
+};
+
+export const { handlers, auth, signIn, signOut } = NextAuth(authConfig);

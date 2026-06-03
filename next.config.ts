@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
     root: path.resolve(__dirname),
   },
   outputFileTracingRoot: path.resolve(__dirname),
+  allowedDevOrigins: ["127.0.0.1"],
 };
 
 export default nextConfig;
