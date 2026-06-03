@@ -59,11 +59,14 @@ export async function getAllPlaylists(token: string): Promise<PlaylistSummary[]>
   return out;
 }
 
-interface RawTrackItem {
+// /playlists/{id}/items response — the track object is under "item", not "track".
+// "track" and "episode" on the outer object are booleans, not nested objects.
+interface RawPlaylistItem {
   added_at: string;
-  track: {
+  item: {
     id: string | null;
     name: string;
+    type: string; // "track" | "episode"
     duration_ms: number;
     popularity: number;
     artists: { id: string; name: string }[];
@@ -75,9 +78,6 @@ interface RawTrackItem {
   } | null;
 }
 
-const TRACK_FIELDS =
-  "items(added_at,track(id,name,duration_ms,popularity,artists(id,name),album(name,images,release_date))),next";
-
 /** All tracks in a playlist, flattened. Local tracks / episodes are skipped. */
 export async function getPlaylistTracks(
   token: string,
@@ -85,14 +85,14 @@ export async function getPlaylistTracks(
   playlistName: string,
 ): Promise<CollectedTrack[]> {
   const out: CollectedTrack[] = [];
-  let url: string | null = `${API}/playlists/${playlistId}/tracks?limit=100&fields=${encodeURIComponent(
-    TRACK_FIELDS,
-  )}`;
+  // Use /items (not the deprecated /tracks) — Spotify 403s on the old endpoint.
+  let url: string | null = `${API}/playlists/${playlistId}/items?limit=100`;
   while (url) {
-    const page: Paging<RawTrackItem> = await spotifyGet(token, url);
+    const page: Paging<RawPlaylistItem> = await spotifyGet(token, url);
     for (const item of page.items) {
-      const t = item?.track;
-      if (!t || !t.id || !t.artists?.length) continue;
+      const t = item?.item;
+      // Skip episodes, local files, and items without artists.
+      if (!t || t.type !== "track" || !t.id || !t.artists?.length) continue;
       out.push({
         id: t.id,
         name: t.name,
@@ -155,9 +155,37 @@ export async function collectLibrary(
 ): Promise<{ tracks: CollectedTrack[]; artists: Map<string, ArtistInfo> }> {
   const tracks: CollectedTrack[] = [];
   for (const p of playlists) {
-    tracks.push(...(await getPlaylistTracks(token, p.id, p.name)));
+    try {
+      tracks.push(...(await getPlaylistTracks(token, p.id, p.name)));
+    } catch (err) {
+      console.warn(`Skipping playlist "${p.name}" (${p.id}):`, err);
+    }
   }
-  const artistIds = tracks.flatMap((t) => t.artistIds);
-  const artists = await getArtists(token, artistIds);
+
+  // Try to enrich with artist genres/images from /artists. Spotify restricts
+  // this endpoint for Development Mode apps, so fall back to stub artist info
+  // built from the names already present in the track data.
+  let artists: Map<string, ArtistInfo>;
+  try {
+    const artistIds = tracks.flatMap((t) => t.artistIds);
+    artists = await getArtists(token, artistIds);
+  } catch {
+    // Build stub artist info from what the track data already has.
+    artists = new Map<string, ArtistInfo>();
+    for (const t of tracks) {
+      t.artistIds.forEach((id, i) => {
+        if (!artists.has(id)) {
+          artists.set(id, {
+            id,
+            name: t.artistNames[i] ?? "Unknown",
+            genres: [],
+            popularity: t.popularity,
+            image: null,
+          });
+        }
+      });
+    }
+  }
+
   return { tracks, artists };
 }
